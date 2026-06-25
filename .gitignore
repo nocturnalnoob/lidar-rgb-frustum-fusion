@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
@@ -216,3 +217,24 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+=======
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Model weights (auto-downloaded by Ultralytics)
+*.pt
+
+# Dataset (download via scripts/download_sample.py)
+data/
+
+# Pipeline outputs
+outputs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+>>>>>>> 913884f (Initial commit)
