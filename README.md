@@ -181,8 +181,13 @@ the **geometric fitter stays the default.** The takeaway is honest: the model cl
 *segmentation* stage of real Frustum-PointNet. Building, wiring, and rigorously
 benchmarking it — including reporting where it loses — is the deliverable.
 
+A ready-to-run **Kaggle-GPU notebook** that retrains the head with **2D-box-jitter
+augmentation** (+ point dropout/noise) on the full KITTI set — the fix for this exact gap —
+is in [`notebooks/kaggle_train_frustum.ipynb`](notebooks/kaggle_train_frustum.ipynb). It trains
+on GPU, then re-runs the deployment eval so you can see whether the gap closed.
+
 ```bash
-python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates
+python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates (CPU)
 python scripts/run_fusion.py --idx 2 --head learned                  # run with the learned head
 ```
 Trained weights: `models/frustum_pointnet.pt` (350 KB). Runs on CPU.
