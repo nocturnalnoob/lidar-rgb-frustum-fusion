@@ -24,7 +24,7 @@ from src.calibration.project_lidar import overlay_lidar_on_image
 class FusionPipeline:
     """Holds the (lazily-loaded) detector and runs frames on demand."""
 
-    def __init__(self, data_dir='data/kitti', weights='yolov8n.pt',
+    def __init__(self, data_dir='data/kitti', weights='yolov8s.pt',
                  conf=0.35, device='cpu'):
         self.loader = KittiLoader(data_dir, split='training')
         self.weights = weights

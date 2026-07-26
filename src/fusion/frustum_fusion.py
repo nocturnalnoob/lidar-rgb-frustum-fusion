@@ -21,32 +21,41 @@ from src.calibration.project_lidar import (
     rect_to_velo,
 )
 
+# KITTI class-median dimensions (h, w, l) in metres. A single LiDAR sweep only
+# observes an object's near faces, so we refine the measured extent toward these
+# priors (position and heading still come from the LiDAR geometry).
+CLASS_PRIORS = {
+    'Car': (1.53, 1.63, 3.88),
+    'Pedestrian': (1.76, 0.66, 0.84),
+    'Cyclist': (1.74, 0.60, 1.76),
+}
 
-def segment_ground(pts_velo, dist_thresh=0.2, n_iters=80, seed_height=-1.2):
+
+def segment_ground(pts_velo, dist_thresh=0.2, n_iters=120, seed_height=-1.2, seed=0):
     """
     Estimate the ground plane in the Velodyne frame with RANSAC.
 
     The Velodyne frame has +z up, so the ground is a near-horizontal plane a bit
-    below the sensor. Returns a boolean mask that is True for NON-ground points.
+    below the sensor.
+
+    Returns:
+        non_ground: (N,) bool mask, True for points NOT on the ground.
+        plane:      (normal(3,), d) of the fitted ground plane, or None.
     """
     pts = pts_velo[:, :3]
     n = pts.shape[0]
     if n < 50:
-        return np.ones(n, dtype=bool)
+        return np.ones(n, dtype=bool), None
 
     # Seed RANSAC from low points only — robust against walls/large objects.
     candidate_idx = np.where(pts[:, 2] < seed_height + 1.0)[0]
     if candidate_idx.size < 50:
         candidate_idx = np.arange(n)
 
-    best_inliers = None
-    best_count = 0
-    rng_order = candidate_idx
-    for it in range(n_iters):
-        # Deterministic-ish sampling: stride through candidates by iteration.
-        a = rng_order[(it * 3) % rng_order.size]
-        b = rng_order[(it * 7 + 1) % rng_order.size]
-        c = rng_order[(it * 13 + 2) % rng_order.size]
+    rng = np.random.default_rng(seed)
+    best_inliers, best_count, best_plane = None, 0, None
+    for _ in range(n_iters):
+        a, b, c = candidate_idx[rng.integers(0, candidate_idx.size, size=3)]
         p1, p2, p3 = pts[a], pts[b], pts[c]
         normal = np.cross(p2 - p1, p3 - p1)
         norm = np.linalg.norm(normal)
@@ -61,16 +70,25 @@ def segment_ground(pts_velo, dist_thresh=0.2, n_iters=80, seed_height=-1.2):
         inliers = dist < dist_thresh
         count = int(inliers.sum())
         if count > best_count:
-            best_count = count
-            best_inliers = inliers
+            best_count, best_inliers = count, inliers
+            best_plane = (normal, float(d))
 
     if best_inliers is None:
-        # Fallback: simple height threshold.
-        return pts[:, 2] > seed_height
-    return ~best_inliers
+        return pts[:, 2] > seed_height, None
+    return ~best_inliers, best_plane
 
 
-def _frustum_mask(pts_2d, in_front, depth, bbox, shrink=0.10, max_depth=70.0):
+def _ground_z(plane, x, y):
+    """Height (z) of the ground plane at Velodyne coordinate (x, y)."""
+    if plane is None:
+        return None
+    (nx, ny, nz), d = plane
+    if abs(nz) < 1e-6:
+        return None
+    return -(nx * x + ny * y + d) / nz
+
+
+def _frustum_mask(pts_2d, in_front, depth, bbox, shrink=0.05, max_depth=70.0):
     """Boolean mask of points projecting inside a (slightly shrunk) 2D box."""
     x1, y1, x2, y2 = bbox
     w, h = x2 - x1, y2 - y1
@@ -111,12 +129,17 @@ def _dominant_cluster(pts_velo, eps=0.6, min_samples=8):
     return best_idx
 
 
-def _oriented_box_from_cluster(cluster_velo):
+def _oriented_box_from_cluster(cluster_velo, kitti_class=None, ground_plane=None):
     """
     Fit an oriented 3D box to a Velodyne cluster.
 
-    Heading/extent come from the minimum-area rectangle in the bird's-eye (x-y)
-    plane; height from the z extent. Returns a dict in the Velodyne frame:
+    Heading comes from the minimum-area rectangle in the bird's-eye (x-y) plane;
+    position from the cluster. Because a LiDAR sweep only sees an object's near
+    faces, the measured extent is refined toward class-size priors and the box is
+    re-anchored so it grows *away* from the sensor (keeping the observed near face
+    fixed). The box floor is snapped to the estimated ground plane.
+
+    Returns a dict in the Velodyne frame:
         center_bottom (3,), size (l, w, h), yaw, corners (8,3).
     """
     import cv2
@@ -124,30 +147,55 @@ def _oriented_box_from_cluster(cluster_velo):
     xy = cluster_velo[:, :2].astype(np.float32)
     z = cluster_velo[:, 2]
     rect = cv2.minAreaRect(xy)            # ((cx,cy),(d1,d2),angle_deg)
-    (cx, cy), (d1, d2), _ = rect
-    box_pts = cv2.boxPoints(rect)         # (4,2) BEV corners, ordered
+    (cx, cy), _, _ = rect
+    box_pts = cv2.boxPoints(rect)
 
-    # Heading from the longer edge of the rectangle.
     e1 = box_pts[1] - box_pts[0]
     e2 = box_pts[2] - box_pts[1]
     if np.linalg.norm(e1) >= np.linalg.norm(e2):
         long_edge, length, width = e1, np.linalg.norm(e1), np.linalg.norm(e2)
     else:
         long_edge, length, width = e2, np.linalg.norm(e2), np.linalg.norm(e1)
-    yaw = np.arctan2(long_edge[1], long_edge[0])
+    yaw = float(np.arctan2(long_edge[1], long_edge[0]))
 
-    z_min, z_max = float(z.min()), float(z.max())
-    height = z_max - z_min
+    # Height: floor on the ground plane, top from the observed points.
+    prior = CLASS_PRIORS.get(kitti_class)
+    gz = _ground_z(ground_plane, cx, cy)
+    z_bottom = gz if gz is not None else float(z.min())
+    z_top = float(z.max())
+    height = z_top - z_bottom
+    if prior is not None:
+        length = max(length, prior[2])
+        width = max(width, prior[1])
+        height = max(height, prior[0])
+    z_top = z_bottom + height
 
-    # 8 corners in the Velodyne frame: bottom 4 then top 4.
-    bottom = np.column_stack([box_pts, np.full(4, z_min)])
-    top = np.column_stack([box_pts, np.full(4, z_max)])
+    center = np.array([cx, cy], dtype=np.float64)
+    u = np.array([np.cos(yaw), np.sin(yaw)])          # heading axis
+    # Re-anchor along heading: keep the near end fixed, grow the far end out.
+    half0 = np.linalg.norm(long_edge) / 2.0
+    end_a, end_b = center + half0 * u, center - half0 * u
+    if np.linalg.norm(end_a) <= np.linalg.norm(end_b):
+        near, far_dir = end_a, -u
+    else:
+        near, far_dir = end_b, u
+    center = near + far_dir * (length / 2.0)
+
+    # Build the 4 BEV corners from (center, yaw, length, width).
+    v = np.array([-np.sin(yaw), np.cos(yaw)])          # width axis
+    hl, hw = length / 2.0, width / 2.0
+    bev = np.array([center + hl * u + hw * v,
+                    center + hl * u - hw * v,
+                    center - hl * u - hw * v,
+                    center - hl * u + hw * v])
+    bottom = np.column_stack([bev, np.full(4, z_bottom)])
+    top = np.column_stack([bev, np.full(4, z_top)])
     corners = np.vstack([bottom, top])
 
     return {
-        'center_bottom': np.array([cx, cy, z_min]),
+        'center_bottom': np.array([center[0], center[1], z_bottom]),
         'size': (float(length), float(width), float(height)),  # l, w, h
-        'yaw': float(yaw),
+        'yaw': yaw,
         'corners_velo': corners,
     }
 
@@ -184,7 +232,7 @@ def fuse_frame(lidar, calib, detections,
     pts_2d, depth, in_front = project_velo_to_image_indexed(lidar, calib)
 
     # Global ground segmentation once per frame (reused by every frustum).
-    non_ground = segment_ground(lidar, dist_thresh=ground_thresh)
+    non_ground, ground_plane = segment_ground(lidar, dist_thresh=ground_thresh)
 
     results = []
     for det in detections:
@@ -199,7 +247,8 @@ def fuse_frame(lidar, calib, detections,
             continue
         cluster = cluster_pts[cluster_idx]
 
-        box_velo = _oriented_box_from_cluster(cluster)
+        box_velo = _oriented_box_from_cluster(
+            cluster, kitti_class=det['kitti_class'], ground_plane=ground_plane)
         kitti = _to_kitti_box(box_velo, calib)
         obj_depth = float(np.median(np.linalg.norm(cluster[:, :2], axis=1)))
 

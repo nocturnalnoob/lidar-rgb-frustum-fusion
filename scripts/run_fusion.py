@@ -47,7 +47,7 @@ def main():
     ap.add_argument('--idx', type=int, default=0)
     ap.add_argument('--all', action='store_true', help='process every frame found')
     ap.add_argument('--out', default='outputs')
-    ap.add_argument('--weights', default='yolov8n.pt')
+    ap.add_argument('--weights', default='yolov8s.pt')
     ap.add_argument('--conf', type=float, default=0.35)
     args = ap.parse_args()
 

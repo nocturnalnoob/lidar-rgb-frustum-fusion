@@ -1,0 +1,60 @@
+{
+  "Car": {
+    "Easy": {
+      "ap": 0.1876,
+      "n_gt": 161,
+      "tp": 83
+    },
+    "Moderate": {
+      "ap": 0.1084,
+      "n_gt": 420,
+      "tp": 108
+    },
+    "Hard": {
+      "ap": 0.0899,
+      "n_gt": 563,
+      "tp": 114
+    }
+  },
+  "Pedestrian": {
+    "Easy": {
+      "ap": 0.3532,
+      "n_gt": 61,
+      "tp": 36
+    },
+    "Moderate": {
+      "ap": 0.3049,
+      "n_gt": 84,
+      "tp": 42
+    },
+    "Hard": {
+      "ap": 0.2668,
+      "n_gt": 96,
+      "tp": 42
+    }
+  },
+  "Cyclist": {
+    "Easy": {
+      "ap": 0.2222,
+      "n_gt": 18,
+      "tp": 4
+    },
+    "Moderate": {
+      "ap": 0.1935,
+      "n_gt": 31,
+      "tp": 6
+    },
+    "Hard": {
+      "ap": 0.2121,
+      "n_gt": 33,
+      "tp": 7
+    }
+  },
+  "localization": {
+    "median_iou": 0.753,
+    "median_center_err_m": 0.159,
+    "recall": 0.323,
+    "tp": 173,
+    "n_gt": 535
+  }
+}
