@@ -22,7 +22,8 @@ app** for interactive exploration.
   (Easy/Moderate/Hard) with the official KITTI ignore rules (neighbour classes, DontCare
   regions), plus precision-recall curves.
 - **Learned box head.** A trained PointNet (Frustum-PointNet-style) halves BEV center error
-  vs the geometric fitter (1.96 → 1.09 m).
+  vs the geometric fitter *on GT-box frustums* (1.96 → 1.09 m) — rigorously benchmarked,
+  including an honest deployment gap on detector boxes.
 - **Multi-object tracking.** SORT (Kalman + Hungarian) assigns stable IDs across a KITTI
   tracking sequence.
 - **Runs on CPU** (~1–2 s/frame) and ships as a **Dockerized web app** deployable to a
@@ -160,7 +161,25 @@ Pedestrian 20, Cyclist 7** — the non-Car numbers are too small to read per-cla
 
 The learned head is **wired into the full pipeline** and selectable everywhere — the web-app
 **3D HEAD toggle**, `run_fusion.py --head learned`, and `evaluate_dataset.py --head learned`.
-The geometric fitter remains the default.
+
+### …but in deployment it underperforms — an honest negative result
+
+Run end-to-end on **detector (YOLOv8) boxes** instead of GT boxes — same 200-frame KITTI
+protocol — the picture flips:
+
+| Head | mAP (Moderate) | Matched BEV IoU | Center err | Recall |
+|------|:---:|:---:|:---:|:---:|
+| **Geometric** (default) | **0.202** | **0.75** | **0.16 m** | **0.32** |
+| Learned | 0.006 | 0.62 | 0.38 m | 0.28 |
+
+The learned head was trained on *ground-truth* 2D-box frustums and **does not transfer to
+detector boxes** at this data scale — a textbook train/deploy distribution shift, compounded
+by no false-positive gating (it emits a box per detection) and only 200 training frames. So
+the **geometric fitter stays the default.** The takeaway is honest: the model clearly learns
+*in-distribution* (halved center error above), but making it help *in deployment* needs
+2D-box-jitter augmentation, training on detector boxes, more data, and ideally the point
+*segmentation* stage of real Frustum-PointNet. Building, wiring, and rigorously
+benchmarking it — including reporting where it loses — is the deliverable.
 
 ```bash
 python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates
@@ -291,7 +310,8 @@ SciPy (Hungarian, Kalman) · NumPy · Matplotlib · Flask · Docker · KITTI
 > detections by viewing frustum, RANSAC ground removal, DBSCAN clustering, and oriented 3D
 > box fitting. Evaluated over 200 frames with the standard KITTI protocol (per-difficulty
 > BEV AP); **median BEV center error 0.16 m** on matched detections. Additionally **trained
-> a PointNet box head** (Frustum-PointNet-style) that halves center error vs the geometric
-> fitter (1.96 → 1.09 m), and added **SORT multi-object tracking** (Kalman + Hungarian) with
+> a PointNet box head** (Frustum-PointNet-style) that halves center error on GT-box frustums
+> (1.96 → 1.09 m) — with a rigorous end-to-end benchmark that honestly surfaces its
+> train/deploy gap — and added **SORT multi-object tracking** (Kalman + Hungarian) with
 > stable IDs across a tracking sequence. Shipped as a Dockerized Flask web app with an
 > animated visualization UI. Runs on CPU.
