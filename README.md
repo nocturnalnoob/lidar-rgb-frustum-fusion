@@ -21,6 +21,10 @@ app** for interactive exploration.
 - **Rigorous evaluation.** Bird's-eye-view Average Precision per class and per difficulty
   (Easy/Moderate/Hard) with the official KITTI ignore rules (neighbour classes, DontCare
   regions), plus precision-recall curves.
+- **Learned box head.** A trained PointNet (Frustum-PointNet-style) halves BEV center error
+  vs the geometric fitter (1.96 → 1.09 m).
+- **Multi-object tracking.** SORT (Kalman + Hungarian) assigns stable IDs across a KITTI
+  tracking sequence.
 - **Runs on CPU** (~1–2 s/frame) and ships as a **Dockerized web app** deployable to a
   free public URL.
 
@@ -128,6 +132,57 @@ learned box head (Frustum-PointNet-style) on the frustum points.
 
 ---
 
+## Learned 3D box head (Frustum-PointNet)
+
+As an alternative to the geometric box fitter, a compact **PointNet** is trained to
+regress the 3D box directly from the frustum points (viewpoint-normalized, size
+residuals against a class anchor — following Frustum-PointNet, Qi et al. 2018). Both
+methods consume the *same* GT-2D-box frustums, so the comparison isolates the box
+estimator. Trained on 618 objects (200 frames), evaluated on a **frame-level** split of
+150 val objects:
+
+| Term | Geometric fitter | **Learned PointNet** |
+|------|:---:|:---:|
+| Median BEV center error | 1.96 m | **1.09 m** |
+| Median heading error | **0.34 rad** | 0.37 rad |
+| Median size ratio (pred/GT) | 1.01 | 0.99 |
+
+The learned head **roughly halves center error** — it recovers position from partial,
+single-view point clouds better than clustering + rectangle fitting does — while heading
+and size tie (size is anchor-driven for both). This is a genuine learned improvement, with
+an honest ceiling: only 200 frames of training data, and val counts of **Car 123,
+Pedestrian 20, Cyclist 7** — the non-Car numbers are too small to read per-class.
+
+```bash
+python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates
+```
+Trained weights: `models/frustum_pointnet.pt` (350 KB). Runs on CPU.
+
+---
+
+## Multi-object tracking (SORT)
+
+On the KITTI **tracking** benchmark, detection → fusion → a **SORT** tracker (per-track
+constant-velocity Kalman filter on the BEV center + Hungarian association by BEV-IoU)
+assigns each object a stable ID across frames.
+
+![Tracking demo](docs/assets/tracking.gif)
+
+> Sequence 0000 — each object keeps its color/ID across frames; boxes shown on the image
+> (top) and in the bird's-eye view with motion trails (bottom).
+
+Over 70 frames of sequence 0000: **23 tracks**, longest persisting **60 frames**, 4 tracks
+lasting ≥10 frames. (Track fragmentation is bounded by the same detector-recall limit as
+the detection AP — a missed detection can split a track.)
+
+```bash
+python scripts/download_tracking.py --seq 0000 --out data/kitti_tracking
+python scripts/run_tracking.py --seq 0000 --data_dir data/kitti_tracking \
+    --out docs/assets/tracking.gif
+```
+
+---
+
 ## Quick start
 
 ```bash
@@ -188,16 +243,22 @@ partial-zip extraction. For the full **KITTI 3D Object Detection** set (7481 fra
 ├── Dockerfile, deploy/DEPLOY.md  # containerization + hosting
 ├── scripts/
 │   ├── download_sample.py        # 3 real KITTI sample frames
-│   ├── download_subset.py        # N frames via partial-zip extraction
+│   ├── download_subset.py        # N detection frames via partial-zip extraction
+│   ├── download_tracking.py      # one tracking sequence via partial-zip
 │   ├── run_fusion.py             # headless pipeline CLI
 │   ├── evaluate_dataset.py       # KITTI-protocol BEV-AP evaluation
+│   ├── train_frustum.py          # train + evaluate the learned box head
+│   ├── run_tracking.py           # SORT tracking demo -> GIF
 │   └── make_demo_gif.py          # pipeline walkthrough GIF
 └── src/
-    ├── data/kitti_loader.py          # image/LiDAR/calib/label parsing
+    ├── data/kitti_loader.py          # detection-split image/LiDAR/calib/label parsing
+    ├── data/tracking_loader.py       # tracking-sequence loader (key/label normalization)
     ├── calibration/project_lidar.py  # velo↔rect transforms, projection, box corners
-    ├── detection/yolo_detector.py    # YOLOv8 wrapper + COCO→KITTI mapping
-    ├── fusion/frustum_fusion.py      # ground removal, clustering, 3D box fitting
+    ├── detection/yolo_detector.py    # YOLOv8 wrapper + COCO→KITTI (rider = Cyclist)
+    ├── fusion/frustum_fusion.py      # ground removal, clustering, geometric 3D box fit
+    ├── fusion/frustum_pointnet.py    # learned PointNet 3D box head
     ├── fusion/metrics.py             # BEV IoU, KITTI-protocol AP, difficulty
+    ├── tracking/sort.py              # SORT: Kalman + Hungarian, stable track IDs
     ├── visualization/draw.py         # 3D boxes on image + BEV renderer
     └── pipeline.py                   # end-to-end orchestration
 ```
@@ -206,19 +267,20 @@ partial-zip extraction. For the full **KITTI 3D Object Detection** set (7481 fra
 
 ## Tech stack
 
-Python · PyTorch · Ultralytics YOLOv8 · OpenCV · scikit-learn (DBSCAN) · NumPy ·
-Matplotlib · Flask · Docker · KITTI
+Python · PyTorch (PointNet) · Ultralytics YOLOv8 · OpenCV · scikit-learn (DBSCAN) ·
+SciPy (Hungarian, Kalman) · NumPy · Matplotlib · Flask · Docker · KITTI
 
 ---
 
 ## Résumé summary
 
-> **Multi-sensor 3D object detection (LiDAR + camera fusion), KITTI.** Built a
-> training-free 3D detection pipeline fusing a pretrained YOLOv8 detector with Velodyne
-> LiDAR — projecting point clouds through the camera-calibration matrices, associating
-> points to detections by viewing frustum, removing the ground plane with RANSAC,
-> clustering with DBSCAN, and fitting oriented 3D boxes (heading from BEV min-area
-> rectangle, extent from class priors + ground plane). Evaluated over 200 frames with the
-> standard KITTI protocol: **median center error 0.16 m** and **median BEV IoU 0.75** on
-> matched detections; a geometry fix tripled mAP@0.5 (0.045 → 0.13). Shipped as a
-> Dockerized Flask web app with an animated visualization UI. Runs on CPU.
+> **Multi-sensor 3D object detection & tracking (LiDAR + camera fusion), KITTI.** Built a
+> 3D detection pipeline fusing a pretrained YOLOv8 detector with Velodyne LiDAR —
+> projecting point clouds through the camera-calibration matrices, associating points to
+> detections by viewing frustum, RANSAC ground removal, DBSCAN clustering, and oriented 3D
+> box fitting. Evaluated over 200 frames with the standard KITTI protocol (per-difficulty
+> BEV AP); **median BEV center error 0.16 m** on matched detections. Additionally **trained
+> a PointNet box head** (Frustum-PointNet-style) that halves center error vs the geometric
+> fitter (1.96 → 1.09 m), and added **SORT multi-object tracking** (Kalman + Hungarian) with
+> stable IDs across a tracking sequence. Shipped as a Dockerized Flask web app with an
+> animated visualization UI. Runs on CPU.

@@ -1,0 +1,19 @@
+{
+  "val_n": 150,
+  "learned_median": {
+    "center": 1.086,
+    "yaw": 0.365,
+    "size": 0.987
+  },
+  "geometric_median": {
+    "center": 1.961,
+    "yaw": 0.335,
+    "size": 1.01
+  },
+  "per_class_val": {
+    "Car": 123,
+    "Pedestrian": 20,
+    "Cyclist": 7
+  },
+  "notes": "center=BEV centre err (m); yaw=heading err (rad, pi-symmetric); size=mean predicted/GT dimension ratio (1.0 ideal)."
+}
