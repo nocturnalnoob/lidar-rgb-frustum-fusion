@@ -200,6 +200,38 @@ def _oriented_box_from_cluster(cluster_velo, kitti_class=None, ground_plane=None
     }
 
 
+def _corners_from_box(center_bottom, l, w, h, yaw):
+    """8 Velodyne corners (bottom 4 then top 4) from a box's params."""
+    cx, cy, zb = center_bottom
+    u = np.array([np.cos(yaw), np.sin(yaw)])
+    v = np.array([-np.sin(yaw), np.cos(yaw)])
+    c = np.array([cx, cy])
+    hl, hw = l / 2.0, w / 2.0
+    bev = np.array([c + hl * u + hw * v, c + hl * u - hw * v,
+                    c - hl * u - hw * v, c - hl * u + hw * v])
+    bottom = np.column_stack([bev, np.full(4, zb)])
+    top = np.column_stack([bev, np.full(4, zb + h)])
+    return np.vstack([bottom, top])
+
+
+def _learned_box_from_frustum(points_velo, bbox, calib, kitti_class, model, min_pts):
+    """Predict a box dict from raw frustum points using the trained PointNet head."""
+    if points_velo.shape[0] < min_pts:
+        return None
+    from src.fusion.frustum_pointnet import predict_box
+    pred = predict_box(model, points_velo, bbox, calib, kitti_class)
+    h, w, l = pred['size_hwl']                      # decode returns [h, w, l]
+    center = pred['center_velo']                    # box centre
+    z_bottom = center[2] - h / 2.0
+    center_bottom = np.array([center[0], center[1], z_bottom])
+    return {
+        'center_bottom': center_bottom,
+        'size': (float(l), float(w), float(h)),
+        'yaw': float(pred['yaw_velo']),
+        'corners_velo': _corners_from_box(center_bottom, l, w, h, pred['yaw_velo']),
+    }
+
+
 def _to_kitti_box(box_velo, calib):
     """Convert a Velodyne-frame box into KITTI rect-frame label fields."""
     loc_rect = velo_to_rect(box_velo['center_bottom'], calib)[0]
@@ -214,9 +246,9 @@ def _to_kitti_box(box_velo, calib):
     }
 
 
-def fuse_frame(lidar, calib, detections,
+def fuse_frame(lidar, calib, detections, head='geometric', frustum_model=None,
                ground_thresh=0.2, dbscan_eps=0.6, min_cluster=8,
-               max_depth=70.0):
+               max_depth=70.0, learned_min_pts=20):
     """
     Run frustum late-fusion for all 2D detections in a frame.
 
@@ -224,33 +256,54 @@ def fuse_frame(lidar, calib, detections,
         lidar:      (N, 4) raw Velodyne scan.
         calib:      calibration dict from KittiLoader.get_calib.
         detections: list from YoloDetector.detect.
+        head:       'geometric' (RANSAC + DBSCAN + rectangle fit) or 'learned'
+                    (the trained Frustum-PointNet head in `frustum_model`).
+        frustum_model: a loaded FrustumPointNet, required when head='learned'.
     Returns:
         List of 3D detections, each augmented with:
             corners_velo (8,3), location, dimensions (h,w,l), rotation_y,
             depth, n_points, plus the original 2D fields.
     """
     pts_2d, depth, in_front = project_velo_to_image_indexed(lidar, calib)
+    use_learned = head == 'learned' and frustum_model is not None
 
-    # Global ground segmentation once per frame (reused by every frustum).
-    non_ground, ground_plane = segment_ground(lidar, dist_thresh=ground_thresh)
+    # Ground segmentation is only needed by the geometric head.
+    ground_plane = None
+    if not use_learned:
+        non_ground, ground_plane = segment_ground(lidar, dist_thresh=ground_thresh)
 
     results = []
     for det in detections:
-        fmask = _frustum_mask(pts_2d, in_front, depth, det['bbox'],
-                              max_depth=max_depth)
-        obj_mask = fmask & non_ground
-        cluster_pts = lidar[obj_mask][:, :3]
+        if use_learned:
+            # Raw 2D-box crop — the distribution the PointNet was trained on.
+            x1, y1, x2, y2 = det['bbox']
+            fmask = (in_front & (depth < max_depth)
+                     & (pts_2d[:, 0] >= x1) & (pts_2d[:, 0] <= x2)
+                     & (pts_2d[:, 1] >= y1) & (pts_2d[:, 1] <= y2))
+            pts = lidar[fmask][:, :3]
+            box_velo = _learned_box_from_frustum(
+                pts, det['bbox'], calib, det['kitti_class'],
+                frustum_model, learned_min_pts)
+            n_points = int(pts.shape[0])
+            cb = box_velo['center_bottom'] if box_velo else None
+            obj_depth = float(np.hypot(cb[0], cb[1])) if box_velo else 0.0
+        else:
+            fmask = _frustum_mask(pts_2d, in_front, depth, det['bbox'],
+                                  max_depth=max_depth)
+            cluster_pts = lidar[fmask & non_ground][:, :3]
+            cluster_idx = _dominant_cluster(cluster_pts, eps=dbscan_eps,
+                                            min_samples=min_cluster)
+            if cluster_idx is None:
+                continue
+            cluster = cluster_pts[cluster_idx]
+            box_velo = _oriented_box_from_cluster(
+                cluster, kitti_class=det['kitti_class'], ground_plane=ground_plane)
+            n_points = int(cluster.shape[0])
+            obj_depth = float(np.median(np.linalg.norm(cluster[:, :2], axis=1)))
 
-        cluster_idx = _dominant_cluster(cluster_pts, eps=dbscan_eps,
-                                        min_samples=min_cluster)
-        if cluster_idx is None:
+        if box_velo is None:
             continue
-        cluster = cluster_pts[cluster_idx]
-
-        box_velo = _oriented_box_from_cluster(
-            cluster, kitti_class=det['kitti_class'], ground_plane=ground_plane)
         kitti = _to_kitti_box(box_velo, calib)
-        obj_depth = float(np.median(np.linalg.norm(cluster[:, :2], axis=1)))
 
         out = dict(det)
         out.update({
@@ -262,7 +315,7 @@ def fuse_frame(lidar, calib, detections,
             'dimensions': kitti['dimensions'],
             'rotation_y': kitti['rotation_y'],
             'depth': obj_depth,
-            'n_points': int(cluster.shape[0]),
+            'n_points': n_points,
         })
         results.append(out)
     return results

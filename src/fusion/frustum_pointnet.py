@@ -119,3 +119,26 @@ if _HAS_TORCH:
         yaw_velo = yaw_canon + rot
         return {'center_velo': center_velo, 'size_hwl': np.array([h, w, l]),
                 'yaw_velo': yaw_velo}
+
+    def load_frustum_model(weights, num_classes=3):
+        """Load a trained FrustumPointNet in eval mode (CPU)."""
+        model = FrustumPointNet(num_classes=num_classes)
+        model.load_state_dict(torch.load(weights, map_location='cpu'))
+        model.eval()
+        return model
+
+    def predict_box(model, points_velo, bbox2d, calib, kitti_class):
+        """Run the learned head on a frustum's raw points -> box in the Velodyne frame.
+
+        Returns {center_velo (box centre), size_hwl, yaw_velo}. The input points are
+        the raw 2D-box crop (same distribution the model was trained on): no ground
+        removal or clustering — the PointNet handles that implicitly.
+        """
+        pts_norm, theta, mean = normalize_frustum(points_velo, bbox2d, calib)
+        pts = sample_points(pts_norm, NUM_POINTS)
+        onehot = np.zeros(3, dtype=np.float32)
+        onehot[CLASS_IDS[kitti_class]] = 1
+        with torch.no_grad():
+            c, s, h = model(torch.tensor(pts)[None], torch.tensor(onehot)[None])
+            h = (h / h.norm(dim=1, keepdim=True).clamp_min(1e-6))[0].numpy()
+        return decode_prediction(c[0].numpy(), s[0].numpy(), h, kitti_class, theta, mean)

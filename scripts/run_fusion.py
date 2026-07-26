@@ -49,9 +49,12 @@ def main():
     ap.add_argument('--out', default='outputs')
     ap.add_argument('--weights', default='yolov8s.pt')
     ap.add_argument('--conf', type=float, default=0.35)
+    ap.add_argument('--head', choices=['geometric', 'learned'], default='geometric',
+                    help="3D box estimator: geometric fitter or learned PointNet head")
     args = ap.parse_args()
 
-    pipe = FusionPipeline(args.data_dir, weights=args.weights, conf=args.conf)
+    pipe = FusionPipeline(args.data_dir, weights=args.weights, conf=args.conf,
+                          head=args.head)
     frames = pipe.list_frames() if args.all else [args.idx]
     if not frames:
         print("No frames found. Run: python scripts/download_sample.py")

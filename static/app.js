@@ -1,6 +1,6 @@
 'use strict';
 
-const state = { frame: null, images: {}, running: false };
+const state = { frame: null, images: {}, running: false, head: 'geometric' };
 
 const $ = (sel) => document.querySelector(sel);
 const $$ = (sel) => Array.from(document.querySelectorAll(sel));
@@ -98,7 +98,7 @@ async function run() {
   const stepTimer = runStepAnimation();
 
   try {
-    const res = await fetch(`/api/run/${state.frame}`);
+    const res = await fetch(`/api/run/${state.frame}?head=${state.head}`);
     const data = await res.json();
     state.images = data.images;
 
@@ -141,7 +141,9 @@ function showImage(key) {
   img.onload = () => { img.classList.add('show'); void img.offsetWidth; img.classList.add('swap'); };
   img.src = state.images[key];
   if (img.complete && img.naturalWidth) img.onload();
-  $('#caption').textContent = CAPTIONS[key] || '';
+  let cap = CAPTIONS[key] || '';
+  if (key === 'detections_3d') cap += `  ·  ${state.head} head`;
+  $('#caption').textContent = cap;
 }
 
 /* ---------- tables + metrics ---------- */
@@ -193,6 +195,10 @@ function renderMetrics(metrics) {
 
 /* ---------- wiring ---------- */
 $('#runBtn').addEventListener('click', run);
+$$('.head-opt').forEach((b) => b.addEventListener('click', () => {
+  state.head = b.dataset.head;
+  $$('.head-opt').forEach((x) => x.classList.toggle('active', x === b));
+}));
 $$('.tab').forEach((t) => t.addEventListener('click', () => {
   $$('.tab').forEach((x) => x.classList.remove('active'));
   t.classList.add('active');

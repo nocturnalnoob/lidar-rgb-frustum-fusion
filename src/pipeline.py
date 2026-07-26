@@ -25,12 +25,16 @@ class FusionPipeline:
     """Holds the (lazily-loaded) detector and runs frames on demand."""
 
     def __init__(self, data_dir='data/kitti', weights='yolov8s.pt',
-                 conf=0.35, device='cpu'):
+                 conf=0.35, device='cpu', head='geometric',
+                 frustum_weights='models/frustum_pointnet.pt'):
         self.loader = KittiLoader(data_dir, split='training')
         self.weights = weights
         self.conf = conf
         self.device = device
+        self.head = head                         # 'geometric' or 'learned'
+        self.frustum_weights = frustum_weights
         self._detector = None
+        self._frustum_model = None
 
     @property
     def detector(self):
@@ -39,20 +43,32 @@ class FusionPipeline:
                                           device=self.device)
         return self._detector
 
+    @property
+    def frustum_model(self):
+        if self._frustum_model is None:
+            from src.fusion.frustum_pointnet import load_frustum_model
+            self._frustum_model = load_frustum_model(self.frustum_weights)
+        return self._frustum_model
+
     def list_frames(self):
         return self.loader.list_frames()
 
-    def run(self, idx, render=True):
+    def run(self, idx, render=True, head=None):
         """
         Process one frame. Returns a dict with detections, metrics and (if
         render=True) BGR image arrays for each visualization stage.
+
+        `head` overrides the instance default ('geometric' or 'learned').
         """
+        head = head or self.head
         calib = self.loader.get_calib(idx)
         image = self.loader.get_image(idx)
         lidar = self.loader.get_lidar(idx)
 
         detections_2d = self.detector.detect(image)
-        detections_3d = fuse_frame(lidar, calib, detections_2d)
+        model = self.frustum_model if head == 'learned' else None
+        detections_3d = fuse_frame(lidar, calib, detections_2d,
+                                   head=head, frustum_model=model)
 
         gt_objects = self.loader.get_labels(idx) if self.loader.has_labels(idx) else []
         metrics = (evaluate_frame(detections_3d, gt_objects, calib)
@@ -60,6 +76,7 @@ class FusionPipeline:
 
         result = {
             'idx': idx,
+            'head': head,
             'image_shape': image.shape,
             'n_lidar': int(lidar.shape[0]),
             'detections_2d': detections_2d,

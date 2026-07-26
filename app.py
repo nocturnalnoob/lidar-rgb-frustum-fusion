@@ -12,7 +12,7 @@ demand; all visualizations are returned to the browser as base64 PNGs.
 import threading
 
 import cv2
-from flask import Flask, Response, abort, jsonify, render_template
+from flask import Flask, Response, abort, jsonify, render_template, request
 
 from src.pipeline import FusionPipeline, detections_to_kitti_lines
 
@@ -64,7 +64,8 @@ def api_frames():
 
 @app.route('/api/image/<int:idx>/<name>.png')
 def api_image(idx, name):
-    png = _image_cache.get((idx, name))
+    head = request.args.get('head', 'geometric')
+    png = _image_cache.get((idx, head, name))
     if png is None:
         abort(404)
     return Response(png, mimetype='image/png')
@@ -72,13 +73,16 @@ def api_image(idx, name):
 
 @app.route('/api/run/<int:idx>')
 def api_run(idx):
+    head = request.args.get('head', 'geometric')
+    if head not in ('geometric', 'learned'):
+        head = 'geometric'
     with _lock:
-        res = _pipeline.run(idx, render=True)
+        res = _pipeline.run(idx, render=True, head=head)
         for name, img in res['images'].items():
-            _image_cache[(idx, name)] = _encode_png(img)
+            _image_cache[(idx, head, name)] = _encode_png(img)
 
     # Cache-busting token so the browser refetches after each run.
-    images = {name: f'/api/image/{idx}/{name}.png?v={len(_image_cache)}'
+    images = {name: f'/api/image/{idx}/{name}.png?head={head}&v={len(_image_cache)}'
               for name in res['images']}
     detections = [_serialize_detection(d) for d in res['detections_3d']]
 
@@ -90,6 +94,7 @@ def api_run(idx):
 
     return jsonify({
         'idx': idx,
+        'head': res['head'],
         'n_lidar': res['n_lidar'],
         'image_shape': list(res['image_shape']),
         'n_2d': len(res['detections_2d']),

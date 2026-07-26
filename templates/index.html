@@ -45,6 +45,11 @@
   <!-- Controls -->
   <section class="controls reveal">
     <div class="frame-picker" id="framePicker"><span class="muted">Loading frames…</span></div>
+    <div class="head-toggle" id="headToggle" title="3D box estimator">
+      <span class="head-lbl">3D head</span>
+      <button class="head-opt active" data-head="geometric">Geometric</button>
+      <button class="head-opt" data-head="learned">Learned</button>
+    </div>
     <button id="runBtn" class="run-btn" disabled>
       <span class="run-label">Run Fusion</span>
       <span class="spinner"></span>

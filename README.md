@@ -158,12 +158,13 @@ Pedestrian 20, Cyclist 7** — the non-Car numbers are too small to read per-cla
 > conditioned on a successful IoU ≥ 0.5 match — a population already selected for being
 > well-localized. Unconditioned, 1.09 m is the harder number.
 
-The trained head is evaluated **standalone** here; the shipped detection pipeline and web
-app still use the geometric fitter (wiring the learned head into inference is left as the
-obvious next step).
+The learned head is **wired into the full pipeline** and selectable everywhere — the web-app
+**3D HEAD toggle**, `run_fusion.py --head learned`, and `evaluate_dataset.py --head learned`.
+The geometric fitter remains the default.
 
 ```bash
 python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates
+python scripts/run_fusion.py --idx 2 --head learned                  # run with the learned head
 ```
 Trained weights: `models/frustum_pointnet.pt` (350 KB). Runs on CPU.
 
