@@ -153,6 +153,15 @@ and size tie (size is anchor-driven for both). This is a genuine learned improve
 an honest ceiling: only 200 frames of training data, and val counts of **Car 123,
 Pedestrian 20, Cyclist 7** — the non-Car numbers are too small to read per-class.
 
+> **Population note:** these medians are over *all* 150 val objects (every GT-box
+> frustum). They are **not** comparable to the 0.16 m figure in the Highlights, which is
+> conditioned on a successful IoU ≥ 0.5 match — a population already selected for being
+> well-localized. Unconditioned, 1.09 m is the harder number.
+
+The trained head is evaluated **standalone** here; the shipped detection pipeline and web
+app still use the geometric fitter (wiring the learned head into inference is left as the
+obvious next step).
+
 ```bash
 python scripts/train_frustum.py --data_dir data/kitti --epochs 120   # trains + evaluates
 ```
@@ -171,9 +180,10 @@ assigns each object a stable ID across frames.
 > Sequence 0000 — each object keeps its color/ID across frames; boxes shown on the image
 > (top) and in the bird's-eye view with motion trails (bottom).
 
-Over 70 frames of sequence 0000: **23 tracks**, longest persisting **60 frames**, 4 tracks
-lasting ≥10 frames. (Track fragmentation is bounded by the same detector-recall limit as
-the detection AP — a missed detection can split a track.)
+Over 70 frames of sequence 0000: **23 tracks**, **median length 3 frames**, longest
+persisting **60 frames**, 4 tracks lasting ≥10 frames. The short median reflects
+fragmentation — bounded by the same detector-recall limit as the detection AP, since a
+missed detection can split a track into two IDs.
 
 ```bash
 python scripts/download_tracking.py --seq 0000 --out data/kitti_tracking
